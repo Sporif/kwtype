@@ -15,7 +15,6 @@ qt6_deps = dependency('qt6', modules: ['Core'])
 kwaylandclient = dependency('KWaylandClient')
 xkbcommon = dependency('xkbcommon')
 
-includes = include_directories('/usr/include/KWayland')
 qtprocessed = qt6.compile_moc(headers: 'src/main.h')
 
 prefix = get_option('prefix')
@@ -36,7 +35,6 @@ executable(
     project_name,
     src_files,
     qtprocessed,
-    include_directories: includes,
     dependencies: [
         qt6_deps,
         kwaylandclient,
