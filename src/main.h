@@ -12,6 +12,8 @@
 
 using namespace KWayland::Client;
 
+void sleep(qint32 ms);
+
 class KWtype : public QObject
 {
     Q_OBJECT
@@ -22,6 +24,11 @@ public:
     void keyPress(quint32 linuxKey);
     void keyRelease(quint32 linuxKey);
     void sendKey(quint32 linuxKey);
+    int handleText(const QStringList& text);
+
+    bool noFlush = false;
+    qint32 keyDelay = 0;
+    qint32 keyHold = 2;
 
 Q_SIGNALS:
     void authenticated();

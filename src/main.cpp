@@ -99,18 +99,30 @@ void KWtype::keyRelease(quint32 keyCode)
 void KWtype::sendKey(quint32 keyCode)
 {
     keyPress(keyCode);
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    if (!noFlush) {
+        m_connectionThreadObject->flush();
+    }
+    sleep(keyHold);
     keyRelease(keyCode);
+    if (!noFlush) {
+        m_connectionThreadObject->flush();
+    }
 }
 
-int handleText(const QStringList& text, KWtype& wtype)
+int KWtype::handleText(const QStringList& text)
 {
     auto ret = 0;
     auto xkb = Xkb::self();
+    auto stringFinalIdx = text.size() - 1;
 
-    for (const auto& string : text) {
-        QVector<uint> ucs4_string = string.toUcs4();
-        for (const auto& ch : ucs4_string) {
+    for (auto string = text.begin(); string != text.end(); ++string) {
+        auto stringIdx = std::distance(text.begin(), string);
+        QVector<uint> ucs4String = string->toUcs4();
+        auto chFinalIdx = ucs4String.size() - 1;
+
+        for (auto chp = ucs4String.begin(); chp != ucs4String.end(); ++chp) {
+            auto chIdx = std::distance(ucs4String.begin(), chp);
+            auto ch = *chp;
             // std::cout << "Character: 0x" << std::format("{:X}", ch) << "\n";
             xkb_keysym_t keysym = xkb_utf32_to_keysym(ch);
             if (keysym == XKB_KEY_NoSymbol) {
@@ -122,51 +134,59 @@ int handleText(const QStringList& text, KWtype& wtype)
             auto keycode = xkb->keycodeFromKeysym(keysym);
             if (!keycode) {
                 // Type using CTRL+SHIFT+U <UNICODE HEX>
-                wtype.keyPress(KEY_LEFTCTRL);
-                wtype.keyPress(KEY_LEFTSHIFT);
-                wtype.sendKey(KEY_U);
-                wtype.keyRelease(KEY_LEFTCTRL);
-                wtype.keyRelease(KEY_LEFTSHIFT);
+                keyPress(KEY_LEFTCTRL);
+                keyPress(KEY_LEFTSHIFT);
+                sendKey(KEY_U);
+                keyRelease(KEY_LEFTCTRL);
+                keyRelease(KEY_LEFTSHIFT);
                 std::string ch_hex = std::format("{:x}", ch);
                 for(char& ch : ch_hex) {
                     xkb_keysym_t keysym = xkb_utf32_to_keysym(ch);
                     auto keycode = xkb->keycodeFromKeysym(keysym);
-                    wtype.sendKey(keycode->code);
+                    sendKey(keycode->code);
                 }
-                wtype.sendKey(KEY_SPACE);
+                sendKey(KEY_SPACE);
                 continue;
             }
 
             switch (keycode->level) {
             case 0:
-                wtype.sendKey(keycode->code);
+                sendKey(keycode->code);
                 break;
             case 1:
-                wtype.keyPress(KEY_LEFTSHIFT);
-                wtype.sendKey(keycode->code);
-                wtype.keyRelease(KEY_LEFTSHIFT);
+                keyPress(KEY_LEFTSHIFT);
+                sendKey(keycode->code);
+                keyRelease(KEY_LEFTSHIFT);
                 break;
             case 2:
-                wtype.keyPress(KEY_RIGHTALT);
-                wtype.sendKey(keycode->code);
-                wtype.keyRelease(KEY_RIGHTALT);
+                keyPress(KEY_RIGHTALT);
+                sendKey(keycode->code);
+                keyRelease(KEY_RIGHTALT);
                 break;
             case 3:
-                wtype.keyPress(KEY_LEFTSHIFT);
-                wtype.keyPress(KEY_RIGHTALT);
-                wtype.sendKey(keycode->code);
-                wtype.keyRelease(KEY_LEFTSHIFT);
-                wtype.keyRelease(KEY_RIGHTALT);
+                keyPress(KEY_LEFTSHIFT);
+                keyPress(KEY_RIGHTALT);
+                sendKey(keycode->code);
+                keyRelease(KEY_LEFTSHIFT);
+                keyRelease(KEY_RIGHTALT);
                 break;
             default:
                 std::cerr << "Unsupported key level: " << (keycode->level + 1) << ", key code: " << keycode->code << "\n";
                 ret = 2;
                 break;
             }
+            if (keyDelay != 0 && (stringIdx != stringFinalIdx || chIdx != chFinalIdx)) {
+                sleep(keyDelay);
+            }
         }
     }
 
     return ret;
+}
+
+void sleep(qint32 ms)
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 }
 
 int main(int argc, char **argv)
@@ -179,8 +199,32 @@ int main(int argc, char **argv)
     parser.setApplicationDescription("Virtual keyboard input tool for KDE Wayland");
     parser.addHelpOption();
     parser.addVersionOption();
+    QCommandLineOption noFlushOpt(QStringList() << "no-flush",
+            QCoreApplication::translate("main", "Do not flush the wayland connection after each key press/release"));
+    parser.addOption(noFlushOpt);
+    QCommandLineOption keyDelayOpt(QStringList() << "d" << "key-delay",
+            QCoreApplication::translate("main", "Delay N milliseconds between keys (the delay between each key press/release pair)"),
+            QCoreApplication::translate("main", "delay"));
+    parser.addOption(keyDelayOpt);
+    QCommandLineOption keyHoldOpt(QStringList() << "H" << "key-hold",
+            QCoreApplication::translate("main", "Hold each key for N milliseconds (the delay between key press and release)"),
+            QCoreApplication::translate("main", "hold"));
+    parser.addOption(keyHoldOpt);
     parser.addPositionalArgument("text", QCoreApplication::translate("main", "Text to type"));
     parser.process(app);
+
+    KWtype wtype(&app);
+    if (parser.isSet(noFlushOpt)) {
+        wtype.noFlush = true;
+    }
+    if (parser.isSet(keyDelayOpt)) {
+        QString keyDelayStr = parser.value(keyDelayOpt);
+        wtype.keyDelay = keyDelayStr.toUInt();
+    }
+    if (parser.isSet(keyHoldOpt)) {
+        QString keyHoldStr = parser.value(keyHoldOpt);
+        wtype.keyHold = keyHoldStr.toUInt();
+    }
     const QStringList text = parser.positionalArguments();
 
     QTimer timer;
@@ -191,11 +235,10 @@ int main(int argc, char **argv)
     });
     timer.start(1000);
 
-    KWtype wtype(&app);
-    QObject::connect(&wtype, &KWtype::authenticated, [&text, &wtype, &timer] {
-        QObject::connect(&wtype, &KWtype::keymapChanged, [&text, &wtype, &timer] {
+    QObject::connect(&wtype, &KWtype::authenticated, [&] {
+        QObject::connect(&wtype, &KWtype::keymapChanged, [&] {
             timer.stop();
-            auto ret = handleText(text, wtype);
+            auto ret = wtype.handleText(text);
             QCoreApplication::exit(ret);
         });
     });
